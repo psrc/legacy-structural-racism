@@ -1,0 +1,1122 @@
+---
+title: "Visuals for Legacy of Structural Racism Interactive Report"
+author: "Mary Richards"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    keep_md: yes
+    df_print: paged
+    toc: yes
+    toc_depth: 6
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+subtitle: "Contemporary: 1970s-Present"
+---
+The contemporary chapter of the [Legacy of Structural Racism Interactive Report](https://storymaps.arcgis.com/stories/e3231510041a49058b653fad86ee5250) includes charts that can be updated regularly, frequency dependent on data sources. This script organizes the creation and output of these (interactive) visuals (HTML) and their related data sets (ACS, Elmer, CSV, etc.).
+```{r rmarkdown setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, 
+                      warning=FALSE, 
+                      message=FALSE) # formatting
+```
+
+```{r libraries, include=FALSE}       
+# devtools::install_github("psrc/psrccensus",
+#                          force=TRUE)
+# devtools::install_github("psrc/psrc.travelsurvey",
+#                          force=TRUE)
+# devtools::install_github("psrc/psrcplot",
+#                          force=TRUE) #requires updated version of rlang
+# devtools::install_github("psrc/psrctrends")
+# devtools::install_github("walkerke/tidycensus")
+
+# remove.packages("rlang") 
+# install.packages("rlang", dependencies = TRUE)
+
+library(tidyverse)
+library(psrccensus)
+library(psrcelmer)
+library(psrc.travelsurvey)
+library(psrcplot)
+library(psrctrends)
+# library(rlang) #required for psrccensus
+# library(emmeans) #required for rlang
+library(magrittr)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+
+library(summarytools) #freq
+library(table1)  #nice descriptive summary table
+library(scales) #number formatting
+library(ggpubr) #graphing - ggarrange fx
+library(forcats) #for factor re-leveling
+library(plotly) #for interactive charts
+library(htmlwidgets) #exporting interactive charts
+library(svglite) #exporting interactive charts - svg
+library(sjPlot) #exporting interactive charts - svg
+# library(xlsx) #error message?
+library(readxl)
+
+library(odbc) #connect to ElmerGeo
+library(DBI) #connect to ElmerGeo
+library(sf)
+
+install_psrc_fonts()
+library(showtext) #trying to fix PSRC font issues
+library(sysfonts) #required for showtext
+library(showtextdb) #required for showtext
+
+library(echarts)
+library(echarts4r)
+# remotes::install_github("JohnCoene/echarts",
+#                         force=TRUE)
+# remotes::install_github("JohnCoene/echarts4r",
+#                         force=TRUE)
+library(echarts4r.assets)
+```
+
+```{r variable setup}
+output_dir_html <- "T:/2023March/Mary/StoryMap/R_outputs/htmls/"
+output_dir_csv <- "T:/2023March/Mary/StoryMap/R_outputs/dashboard-csvs/"
+website_dev_folder <- "//WEB/website_data/legacy-structural-racism-storymap/"
+
+pums_sp <- 1 # Denoting ACS 1-year estimates
+pums_yr <- 2021 # Last data year of span
+
+# data from PUMS with variables used throughout
+# household level - home ownership, home ownership and income, household median income
+x_2021 <- get_psrc_pums(span = pums_sp,
+                        dyear = pums_yr,           
+                        level = "h", #Unit of analysis == household ("p" used for person)
+                        vars = c("HRACE","TEN", "HINCP"))
+```
+A few of the indicators are based on Public Use Microdata Sample (PUMS) data from the Census Bureau. *PUMS 2021 5y data was released January 26, 2023.*
+\
+
+# Housing Tenure -> Homeownership (PUMS)
+## By Race/ethnicity and Income -- 3 income categories
+```{r, include=FALSE}
+# re-categorize to simple rent vs. own
+y_2021 <- x_2021 %>%
+  mutate(tenure_simp=case_when(TEN=="Owned with mortgage or loan (include home equity loans)" |
+                                 TEN=="Owned free and clear" ~ "Own",
+                               TEN=="Rented" ~ "Rent",
+                               TRUE ~ "Other")) %>%
+  mutate(income_cat=case_when(HINCP>=150000 ~ "$150k or more",
+                              HINCP>=75000 ~ "$75k-$149.9k",
+                              HINCP<75000 ~ "Under $75k"))
+```
+
+```{r, include=FALSE}
+# calculate count statistics based on adjusted variables
+dt_21 <- psrc_pums_count(y_2021, group_vars=c("income_cat","HRACE","tenure_simp"), rr=TRUE) 
+
+# simplify data by selecting only 'own' - removing rent and other tenure options
+dt_21_simp <- dt_21 %>% 
+  filter(tenure_simp == "Own",
+         income_cat != "Total") #%>% mutate(HRACE=str_wrap(HRACE, width = 8))
+```
+
+```{r, include=FALSE}
+# to get regional reference numbers
+# calculate count statistics based on adjusted variables
+dt_21_ref <- psrc_pums_count(y_2021, group_vars=c("income_cat","tenure_simp"), rr=TRUE) 
+
+# simplify data by selecting only 'own' - removing rent and other tenure options
+reference_21 <- dt_21_ref %>% 
+  filter(tenure_simp=="Own",
+         income_cat != "Total") %>% 
+  mutate(HRACE="Region")
+```
+
+```{r, include=FALSE}
+# join ownership data with regional ownership reference data
+dt_2021 <- rbind(dt_21_simp, reference_21)
+```
+
+```{r, include=FALSE}
+# setting up reference values for visualization - testing
+reference_val <- dt_2021 %>% 
+  filter(HRACE=="Region") %>% 
+  dplyr::select(income_cat, share) %>% 
+  rename(ref_val=share)
+
+# join reference values to general table
+dt_2021 <- merge(x=dt_2021, y=reference_val,
+                 by="income_cat",
+                 all.x=TRUE)
+
+# add/remove columns to dataset
+dt_2021 <- dt_2021 %>%
+  dplyr::filter(HRACE!="Region")
+```
+
+```{r, include=FALSE}
+# order the income categories
+dt_2021$income_cat <- factor(dt_2021$income_cat,
+                             levels=c("Under $75k", "$75k-$149.9k", "$150k or more"))
+```
+
+```{r, include=FALSE}
+# add relative reliability or coefficient of variation (CV) calculations (http://aws-linux/mediawiki/index.php/Understanding_Error_and_Determining_Statistical_Significance)
+# dt_2021 <- dt_2021 %>% 
+#   mutate(rel_reliability_cv=((count_moe/1.645)/count)*100) %>% 
+#   mutate(CV_rec=case_when(rel_reliability_cv>50~"examine with great caution",
+#                           rel_reliability_cv>30 ~"use with caution",
+#                           rel_reliability_cv>15 ~"fair",
+#                           rel_reliability_cv<=15~"good"))
+# 
+# dt_2021
+
+# adjust race labels based on rel. reliability/CV - >15 mark with *
+dt_2021 <- dt_2021 %>%
+  mutate(HRACE=case_when(HRACE=="American Indian or Alaskan Native Alone"~"American Indian or Alaska Native alone*",
+                         HRACE=="Black or African American alone"~"Black or African American alone*",
+                         HRACE=="Native Hawaiian and Other Pacific Islander alone"~"Native Hawaiian and Other Pacific Islander alone*",
+                         HRACE=="Some Other Race alone"~"Some Other Race alone*",
+                         TRUE ~as.character(HRACE)))
+```
+\
+
+### Simplified Race/ethnicity groups
+```{r, include=FALSE}
+# reduce number of race/ethnicity categories, if wanted - removing "multiple", "two or more", and "some other" to make easier to understand
+dt_2021_simprace <- dt_2021 %>% 
+  filter(HRACE=="Asian alone" |
+           HRACE=="Black or African American alone*" |
+           HRACE=="Hispanic or Latinx" |
+           HRACE=="American Indian or Alaska Native alone*" |
+           HRACE=="Native Hawaiian and Other Pacific Islander alone*" |
+           HRACE=="White alone")
+```
+
+```{r, include=FALSE}
+data_nm <- 'homeown21_1y_simprace_income_3'
+
+# create csv - fewer race/ethnicity categories
+# write.csv(dt_2021_simprace,
+#           paste0(output_dir_csv, data_nm,'.csv'),
+#           row.names = TRUE)
+```
+
+```{r own-race-income-chart, fig.width=10}
+# generate static bar chart
+own_race_income_chart <- static_bar_chart(t=dt_2021_simprace,
+                                          x="share", y="income_cat",
+                                          fill="HRACE",
+                                          pos="dodge",
+                                          est="percent",
+                                          # moe="share_moe",
+                                          # href="ref_val", hrefnm="Region",
+                                          # hrefcl='#00716c',
+                                          title="Regional Homeownership by Income and Race/Ethnicity",
+                                          subtitle=NULL,
+                                          source=paste("U.S. Census Bureau, American Community Survey (ACS) 2021 1-Year Public Use Microdata Sample (PUMS)"),
+                                          alt=NULL,
+                                          xlabel=NULL, ylabel=NULL,
+                                          dec = 0, color="psrc_light") #+ theme(legend.position = "none") + scale_x_discrete(limits=rev) #alphabetical order
+
+own_race_income_chart
+
+# generate interactive bar chart
+own_race_income_chart <-interactive_bar_chart(t=dt_2021_simprace,
+                                               x="share", y="income_cat",
+                                               fill="HRACE",
+                                               pos="dodge", est="percent", moe=NULL,
+                                               # href="ref_val", hrefnm="Region", hrefcl='#00716c',
+                                               title="Regional Homeownership by Income and Race/Ethnicity",
+                                               subtitle=NULL,
+                                               # source="U.S. Census Bureau, American Community Survey (ACS) 2021 1-Year Public Use Microdata Sample (PUMS)",
+                                               dec = 0, color="psrc_light")
+```
+
+```{r, include=FALSE}
+# interactive webpage output process
+# htmlwidgets::saveWidget(own_race_income_chart,
+#                         file=paste0(website_dev_folder, data_nm,'.html'))
+```
+\
+\
+
+# Household Median Income (PUMS)
+```{r, include=FALSE}
+# setting up data
+dt2021 <- psrc_pums_median(x_2021,
+                           stat_var = "HINCP",
+                           group_vars ="HRACE",
+                           rr=TRUE)
+
+# setting up reference values for visualization - testing
+dt_2021 <- dt2021 %>%
+  mutate(HRACE=case_when(HRACE=="Total"~"Region",
+                         TRUE~as.character(HRACE)))
+
+reference_val <- dt_2021 %>% 
+  filter(HRACE=="Region")
+
+ref_val <- reference_val$HINCP_median
+
+# add/remove columns to dataset
+dt_2021 <- dt_2021 %>% 
+  # mutate(ref_val=ref_val) %>%
+  dplyr::filter(HRACE!="Region")
+```
+
+```{r, include=FALSE}
+# add relative reliability or coefficient of variation (CV) calculations (http://aws-linux/mediawiki/index.php/Understanding_Error_and_Determining_Statistical_Significance)
+# dt_2021 <- dt_2021 %>% 
+#   mutate(rel_reliability_cv=((HINCP_median_moe/1.645)/HINCP_median)*100) %>% 
+#   mutate(CV_rec=case_when(rel_reliability_cv>50~"examine with great caution",
+#                           rel_reliability_cv>30 ~"use with caution",
+#                           rel_reliability_cv>15 ~"fair",
+#                           rel_reliability_cv<=15~"good"))
+# 
+# dt_2021
+
+# adjust race labels based on rel. reliability/CV - >15 (anything other than 'good') mark with *
+dt_2021 <- dt_2021 %>%
+  # mutate(date=as.character(DATA_YEAR)) %>% 
+  mutate(HRACE=case_when(HRACE=="American Indian or Alaskan Native Alone"~"American Indian or Alaska Native alone*",
+                         HRACE=="Some Other Race alone"~"Some Other Race alone*",
+                         TRUE ~as.character(HRACE)))
+```
+
+## Simplified Race/ethnicity groups
+```{r, include=FALSE}
+# reduce number of race/ethnicity categories, if wanted - removing "multiple", "two or more", and "some other" to make easier to understand
+dt_2021_simprace <- dt_2021 %>% 
+  filter(HRACE=="Asian alone" |
+           HRACE=="Black or African American alone" |
+           HRACE=="Hispanic or Latinx" |
+           HRACE=="American Indian or Alaska Native alone*" |
+           HRACE=="Native Hawaiian and Other Pacific Islander alone" |
+           HRACE=="White alone")
+```
+
+```{r, include=FALSE}
+data_nm <- 'medincome21_1y_simprace'
+
+# create csv - fewer race/ethnicity categories
+# write.csv(dt_2021_simprace,
+#           paste0(output_dir_csv, data_nm,'.csv'),
+#           row.names = TRUE)
+```
+
+```{r, include=FALSE}
+# ordering in descending order - by median
+dt_2021_simprace <- dt_2021_simprace %>% 
+  mutate(HRACE=forcats::fct_reorder(HRACE, -HINCP_median))
+```
+
+```{r medinc-race-chart, fig.width=10}
+# generate static bar chart
+# xlabs <- levels(dt_2021_simprace$HRACE) %>% stringr::str_wrap(18)
+inc_race_chart <- static_bar_chart(t=dt_2021_simprace, 
+                                   x="HINCP_median", y="HRACE", 
+                                   fill="HRACE",
+                                   est="currency",
+                                   # moe="HINCP_median_moe",
+                                   # href="ref_val", hrefnm="Region",
+                                   # hrefcl='#00716c',
+                                   title="Regional Household Median Income by Race/Ethnicity",
+                                   subtitle=NULL, 
+                                   source=paste("U.S. Census Bureau, American Community Survey (ACS) 2021 1-Year Public Use Microdata Sample (PUMS)"),
+                                   dec = -2, color="psrc_light") + ggplot2::scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 18)) + theme(plot.caption = element_text(size = 10)) #+ theme(legend.position = "none") #+ scale_x_discrete(limits=rev) #alphabetical order
+
+# trying to figure out reference line - static
+test_static <- inc_race_chart +
+  ggplot2::geom_hline(yintercept= ref_val,
+                      linetype='solid', linewidth=2, show.legend = FALSE, color='#00716c', alpha=0.65) +
+  ggplot2::annotate("text", x = 1, y = ref_val+5500, label = "Region", angle='0', color='#00716c')
+
+test_static
+
+# ggplotly(test_static)
+
+# generate interactive bar chart
+inc_race_chart <-interactive_bar_chart(t=dt_2021_simprace, 
+                                       x="HINCP_median", y="HRACE", 
+                                       fill="HRACE",
+                                       pos="dodge", est="currency", moe=NULL,
+                                       # href="ref_val", hrefnm="Region", hrefcl='#00716c',
+                                       title='Regional Household Median Income by Race/Ethnicity',
+                                       subtitle=NULL,
+                                       source="U.S. Census Bureau, American Community Survey (ACS) 2021 1-Year Public Use Microdata Sample (PUMS)",
+                                       dec = -3, color="psrc_light")
+```
+
+```{r, include=FALSE}
+# export html to folder 
+# interactive webpage output process
+# htmlwidgets::saveWidget(inc_race_chart,
+#                         file=paste0(website_dev_folder, data_nm,'.html'))
+```
+\
+\
+
+<a href="#top">Back to top of the page</a>
+\
+\
+
+# Home Loan Discrimination (XLSX)
+```{r, include=FALSE}
+loan_by_race <- read_excel("Y:/REAP/Legacy of Structural Racism/7-contemporary/loan_discrimination_race.xlsx")
+
+loan_by_race <- loan_by_race %>% 
+  mutate(value=estimate*100) %>% 
+  mutate(value_rounded=round(value, digits = 0))
+
+# loan_by_race_21 <- loan_by_race %>%
+#   filter(year==2021)
+
+# This allows Poppins to be used in echarts4r
+echarts4r::e_common(font_family = "Poppins")
+```
+
+```{r loan-timeline, fig.width=10}
+# timeline - but doesn't allow icons
+timeline_visual <- loan_by_race %>% 
+  group_by(year) %>% 
+  dplyr::arrange(desc(race)) %>%
+  dplyr::mutate(race= str_wrap(race, 18)) %>% 
+  e_charts(race, timeline = TRUE) %>%
+  e_pictorial(serie = value_rounded, symbol = "circle", #ea_icons('user'),
+              symbolRepeat = TRUE, z = -1,
+              symbolSize = 20,
+              name = "Home Loan Denials (%)") %>% 
+  # e_theme("westeros") %>%
+  e_theme_custom('{"color": ["#8CC63E"]}') %>% #F05A28
+  e_title("Loan Discrimination by Race/Ethnicity (2018-2021)",
+          "Home Loan Denials") %>% 
+  e_flip_coords() %>%
+  e_grid(left = '13%') %>% 
+  e_x_axis(max = 30) %>% 
+  # Hide Legend
+  e_legend(show = FALSE) %>%
+  # Remove Gridlines
+  e_x_axis(splitLine=list(show = FALSE),
+           # formatter = e_axis_formatter("percent")
+           ) %>%
+  e_y_axis(splitLine=list(show = FALSE)) %>% 
+  # Format Label
+  # e_labels(fontSize = 16, fontWeight ='bold', position = "right", offset=c(10, 0)) %>% 
+  e_tooltip() %>% 
+  e_timeline_opts(autoPlay = FALSE) %>%
+  e_toolbox_feature("saveAsImage") #%>%
+  # e_tooltip(formatter = e_tooltip_item_formatter("percent")) #%>% 
+  # e_tooltip(trigger = c("item", "axis"),
+  #           formatter = e_tooltip_item_formatter(style="percent",
+  #                          digits=0))
+
+timeline_visual
+```
+
+```{r, fig.width=10, include=FALSE}
+# interactive webpage output process
+# htmlwidgets::saveWidget(timeline_visual,
+#                         file=paste0(website_dev_folder,'loan-disc-timeline_18-21.html'),
+#                         knitrOptions=list())
+```
+\
+\
+
+<a href="#top">Back to top of the page</a>
+\
+\
+
+# Reasons for Moving (HTS)
+\
+\
+**Combined Residential Displacement by Race/ethnicity**
+Using the **prev_res_factors_displaced** variable (Elmer) which combines respondents who selected any one of the 4 displacement survey responses (shown above) and those who provided open-response answers (if they selected *prev_res_factors_other*) that reflected displacement reasons. The data reflects the past 5 years. *This could be changed if we want to show data over time because the 5-year time frame overlaps the two surveys. We could change it to past 2 years so that the data doesn't overlap*
+
+## Past 1 year, 2 race categories: all, movers, displaced
+This analysis will focus on race among survey respondents, movers, and displaced movers.
+
+### 1. All survey respondents - 2 race categories
+```{r, include=FALSE}
+#2019
+hh_2019<-get_hhts(survey='2019', level="h",
+                  vars=c('hh_race_poc'))
+
+hh_2019_counts<- hhts_count(df=hh_2019,
+                            group_vars=c('hh_race_poc')) %>%
+  filter(hh_race_poc!='Total') %>%
+  filter(hh_race_poc!='Missing') %>%
+  mutate(hh_race_high_low=fct_reorder(hh_race_poc, -share))
+
+#2021
+hh_2021<-get_hhts(survey='2021', level="h",
+                  vars=c('hh_race_poc'))
+
+hh_2021_counts<- hhts_count(df=hh_2021,
+                            group_vars=c('hh_race_poc')) %>%
+  filter(hh_race_poc!='Total')%>%
+  filter(hh_race_poc != 'Missing') %>%
+  mutate(hh_race_high_low= fct_reorder(hh_race_poc, -share))
+
+#2019+2021
+counts_2019_2021_2<-rbind(hh_2019_counts, hh_2021_counts) %>% 
+  dplyr::select(-c(share, share_moe, sample_size)) %>%
+  dplyr::rename(total_count=count,
+                total_count_moe=count_moe)
+```
+
+### 2. All movers - 2 race categories
+```{r, include=FALSE}
+#2019
+movers_hh_2019<-get_hhts(survey='2019', level="h", vars=c('res_dur', 'prev_home_wa', 'hh_race_poc'))%>%filter(res_dur %in% 'Less than a year' & prev_home_wa =='Yes, previous home was in Washington')
+
+movers_hh_2019_counts<- hhts_count(df=movers_hh_2019, group_vars=c('res_dur','hh_race_poc')) %>%
+  filter(res_dur!='Total')%>%
+  filter(hh_race_poc!='Total') %>%
+  filter(hh_race_poc != 'Missing') %>%
+  mutate(hh_race_high_low= fct_reorder(hh_race_poc, -share))
+
+#2021
+movers_hh_2021<-get_hhts(survey='2021', level="h", vars=c('res_dur', 'prev_home_wa', 'hh_race_poc'))%>%filter(res_dur %in% 'Less than a year' & prev_home_wa =='Yes, previous home was in Washington')
+
+movers_hh_2021_counts<- hhts_count(df=movers_hh_2021, group_vars=c('res_dur','hh_race_poc')) %>%
+  filter(res_dur!='Total') %>%
+  filter(hh_race_poc!='Total')%>%
+  filter(hh_race_poc != 'Missing') %>%
+  mutate(hh_race_high_low= fct_reorder(hh_race_poc, -share))
+
+#2019+2021
+movers_2019_2021_counts_2<-rbind(movers_hh_2019_counts, movers_hh_2021_counts) %>% 
+  # mutate(type="movers") %>% 
+  # dplyr::select(-c(res_dur, share, share_moe, sample_size)) %>% 
+  dplyr::rename(mover_count=count,
+                mover_count_moe=count_moe)
+```
+
+### 3. Displaced movers - 2 race categories
+```{r, include=FALSE}
+#2019
+displaced_hh_2019<-get_hhts(survey='2019', level="h", vars=c("prev_res_factors_displaced", 'res_dur', 'prev_home_wa', 'hh_race_poc'))%>%filter(res_dur %in% 'Less than a year' & prev_home_wa =='Yes, previous home was in Washington')%>% mutate(prev_res_factors_displaced = replace_na(prev_res_factors_displaced,'No response'))
+
+displaced_hh_2019_counts<- hhts_count(df=displaced_hh_2019, group_vars=c('prev_res_factors_displaced','hh_race_poc')) %>%
+  filter(prev_res_factors_displaced!='Total')%>%
+  filter(prev_res_factors_displaced=='Displaced')%>%
+  filter(hh_race_poc!='Total') %>%
+  filter(hh_race_poc != 'Missing') %>%
+  mutate(hh_race_high_low= fct_reorder(hh_race_poc, -share))
+
+#2021
+displaced_hh_2021<-get_hhts(survey='2021', level="h", vars=c("prev_res_factors_displaced", 'res_dur', 'prev_home_wa', 'hh_race_poc'))%>%filter(res_dur %in% 'Less than a year' & prev_home_wa =='Yes, previous home was in Washington')%>% mutate(prev_res_factors_displaced = replace_na(prev_res_factors_displaced,'No response'))
+
+displaced_hh_2021_counts<- hhts_count(df=displaced_hh_2021, group_vars=c('prev_res_factors_displaced','hh_race_poc')) %>%
+  filter(prev_res_factors_displaced!='Total') %>% 
+  filter(prev_res_factors_displaced=='Displaced')%>%
+  filter(hh_race_poc!='Total')%>%
+  filter(hh_race_poc != 'Missing') %>%
+  mutate(hh_race_high_low= fct_reorder(hh_race_poc, -share))
+
+#2019+2021
+displaced_2019_2021_counts_2<-rbind(displaced_hh_2019_counts, displaced_hh_2021_counts) %>% 
+  # mutate(type="displaced") %>% 
+  dplyr::select(-c(prev_res_factors_displaced, share, share_moe, sample_size)) %>%
+  dplyr::rename(displaced_count=count,
+                displaced_count_moe=count_moe)
+```
+
+```{r, include=FALSE}
+# combine all, mover, displaced datasets into one dataframe
+race_2_2019_2021 <- cbind(counts_2019_2021_2,
+                          movers_2019_2021_counts_2,
+                          displaced_2019_2021_counts_2)
+```
+
+```{r, include=FALSE}
+# drop duplicate columns
+race_2_2019_2021 <- race_2_2019_2021 %>% 
+  dplyr::select(unique(colnames(.)))
+
+# calculations ----
+# isolate the denominator - total number of all people represented by survey by race/year - use this for calculating % of movers, % displaced
+test_calculate <- race_2_2019_2021 %>% 
+  dplyr::mutate(mover_perc=(mover_count/total_count)) %>% 
+  dplyr::mutate(disp_perc=(displaced_count/total_count)) %>% 
+  # dplyr::mutate(non_mover_perc=((total_count/total_count)-(mover_perc+disp_perc))) %>% 
+  dplyr::select(survey, hh_race_poc, mover_perc, disp_perc)
+
+test_pivot <- test_calculate %>% 
+  pivot_longer(
+    cols = c("disp_perc", "mover_perc"), 
+    names_to = "type", 
+    values_to = "percent") %>% 
+  mutate(type=case_when(type=="disp_perc"~"displaced movers",
+                        type=="mover_perc"~"other movers")) %>% 
+  mutate(hh_race_poc=case_when(hh_race_poc=="Non-POC" ~ "White, Non-Hispanic",
+                               hh_race_poc=="POC" ~ "People of Color"))
+
+test_pivot$type <- factor(test_pivot$type,
+                          levels= c("displaced movers","other movers"))
+
+df_2019 <- test_pivot %>% 
+  filter(survey==2019)
+df_2021 <- test_pivot %>% 
+  filter(survey==2021)
+```
+
+### 4. Visualizations
+#### Movers + displaced - 2019 and 2021
+Although this chart with both 2019 and 2021 data isn't included in the StoryMap, it may be used in the future to compare the changes over time. 
+```{r, include=FALSE, eval=FALSE}
+race_19 <- static_bar_chart(t = df_2019,
+                            x = "percent",
+                            y = "hh_race_poc",
+                            fill = "type",
+                            est = "percent",
+                            pos = "stack",
+                            # moe = "share_moe",
+                            color = "obgnpgy_5",
+                            title = "2019") + scale_y_continuous(limits = c(0, .25))
+
+race_21 <- static_bar_chart(t = df_2021,
+                            x = "percent",
+                            y = "hh_race_poc",
+                            fill = "type",
+                            est = "percent",
+                            pos = "stack",
+                            # moe = "share_moe",
+                            color = "obgnpgy_5",
+                            title = "2021",
+                            source="Puget Sound Regional Council, Household Travel Survey") + scale_y_continuous(limits = c(0, .25))
+
+
+static_plot_1921 <- ggarrange(race_19, race_21, ncol=1, nrow=2, common.legend = TRUE, legend="bottom")
+title <- expression(atop(bold("Regional Residential Displacement"),
+                         scriptstyle("Proportion of movers within the last year by race/ethnicity")))
+static_plot_1921_title <-annotate_figure(static_plot_1921, top = text_grob(title,
+                                                    color = "#3e4040", face = "bold", size = 16, family = "Poppins"))
+static_plot_1921_title
+
+# interactive
+race_19 <- interactive_bar_chart(t = df_2019,
+                                 x = "percent",
+                                 y = "hh_race_poc",
+                                 fill = "type",
+                                 est = "percent",
+                                 pos = "stack",
+                                 # moe = "share_moe",
+                                 color = "obgnpgy_5",
+                                 title = "2019")
+
+race_21 <- interactive_bar_chart(t = df_2021,
+                                 x = "percent",
+                                 y = "hh_race_poc",
+                                 fill = "type",
+                                 est = "percent",
+                                 pos = "stack",
+                                 # moe = "share_moe",
+                                 color = "obgnpgy_5",
+                                 title = "2021",
+                                 source="Puget Sound Regional Council, Household Travel Survey")  #%>% layout(showlegend = FALSE)
+
+int_plot_1921 <- subplot(race_19, race_21, nrows = 2, shareX = T) #%>% layout(legend=list(title=list(text='<b> Dataset </b>')))
+```
+
+```{r, include=FALSE, eval=FALSE}
+# data_nm <- 'res_displacement_1y_201921_2race'
+# 
+# # export html to folder 
+# # interactive webpage output process
+# htmlwidgets::saveWidget(int_plot_1921,
+#                         file=paste0(website_dev_folder, data_nm,'.html'))
+```
+\
+
+#### Movers + displaced - 2019
+This is the visual that is included in the original version of the StoryMap (created in 2023).
+```{r movers-displacement-chart-2019, fig.width=10}
+
+# static ----
+race_19 <- static_bar_chart(t = df_2019,
+                            x = "percent", 
+                            y = "hh_race_poc",
+                            fill = "type",
+                            est = "percent",
+                            pos = "stack",
+                            color = "obgnpgy_5",
+                            title = NULL,
+                            source="Puget Sound Regional Council, Household Travel Survey") + scale_y_continuous(limits = c(0, .25))
+
+title <- expression(atop(bold("Regional Residential Displacement"), 
+                         scriptstyle("Proportion of households within the last year by race/ethnicity (2019)")))
+static_plot_19_title <-annotate_figure(race_19, 
+                                       top = text_grob(title,
+                                                       color = "#3e4040", 
+                                                       face = "bold", 
+                                                       size = 16, family = "Poppins"))
+static_plot_19_title
+
+# interactive ----
+race_19_int <- interactive_bar_chart(t = df_2019,
+                                     x = "percent", 
+                                     y = "hh_race_poc",
+                                     fill = "type",
+                                     est = "percent",
+                                     pos = "stack",
+                                     # moe = "share_moe",
+                                     color = "obgnpgy_5",
+                                     title = "Regional Residential Displacement",
+                                     subtitle = "Proportion of households within the last year by race/ethnicity (2019)")
+```
+
+```{r}
+data_nm <- 'res_displacement_1y_2019_2race'
+
+# export html to folder
+# interactive webpage output process
+# htmlwidgets::saveWidget(race_19,
+#                         file=paste0(website_dev_folder, data_nm,'.html'))
+```
+\
+\
+
+<a href="#top">Back to top of the page</a>
+\
+\
+
+# Inequity in Incarceration by Race/ethnicity (PDF Report)
+Data from [The Color of Justice: Racial and Ethnic Disparity in State Prisons](https://www.sentencingproject.org/app/uploads/2022/08/The-Color-of-Justice-Racial-and-Ethnic-Disparity-in-State-Prisons.pdf).
+```{r, include=FALSE}
+xlsx_data <- "Y:/REAP/Legacy of Structural Racism/7-contemporary/incarceration_disparities.xlsx"
+
+# read in data
+incarceration_data <- readxl::read_xlsx(xlsx_data)
+# return the names of the sheets for later use:
+# excel_sheets(path = xlsx_data)
+```
+\
+
+## Rate of Imprisonment
+```{r, include=FALSE}
+rate_imprisonment <- read_excel(path = xlsx_data, sheet = "Rate_Imprisonment")
+```
+
+```{r rate-imprisonment-chart, fig.width=10}
+# generate static column chart
+rate_imprisonment_chart <- static_column_chart(t=rate_imprisonment, 
+                                               x="race-ethnicity", y="estimate", 
+                                               fill="geography",
+                                               pos="dodge",
+                                               est="number",
+                                               moe=NULL,
+                                               # href=NULL, hrefnm=NULL, hrefcl=NULL,
+                                               title="Average Rate of Black, Hispanic, and White Imprisonment",
+                                               subtitle="Per 100,000 Residents", 
+                                               source="The Color of Justice: Racial and Equity Disparity in State Prisons, 2019 (The Sentencing Project)",
+                                               alt=NULL,
+                                               xlabel=NULL, ylabel=NULL,
+                                               dec = 0, color="psrc_light") + theme(plot.caption = element_text(size = 10)) #+ scale_x_discrete(limits=rev) #alphabetical order
+
+rate_imprisonment_chart
+
+# generate interactive bar chart
+rate_imprisonment_chart <-interactive_column_chart(t=rate_imprisonment, 
+                                                   x="race-ethnicity", y="estimate", 
+                                                   fill="geography",
+                                                   pos="dodge", est="number", moe=NULL,
+                                                   # href=NULL, hrefnm=NULL, hrefcl=NULL,
+                                                   title="Average Rate of Black, Hispanic, and White Imprisonment (2019)",
+                                                   subtitle="Per 100,000 Residents", 
+                                                   # source="The Color of Justice: Racial and Equity Disparity in State Prisons (The Sentencing Project)",
+                                                   dec = 0, color="psrc_light")
+```
+
+```{r, include=FALSE}
+# interactive webpage output process
+# htmlwidgets::saveWidget(rate_imprisonment_chart,
+#                         file=paste0(website_dev_folder, "rate_imprisonment.html"))
+```
+\
+\
+
+## % in prison vs. % of population
+```{r, include=FALSE}
+prison_pop_imprisonment <- read_excel(path = xlsx_data, sheet = "Prison_Population")
+
+prison_pop_imprisonment <- prison_pop_imprisonment %>% 
+  mutate(percent=case_when(percent=="population"~"% in Population",
+                           percent=="prison"~"% in Prison"))
+```
+
+```{r prison-pop-chart, fig.width=10}
+# generate static bar chart
+prison_pop_chart <- static_column_chart(t=prison_pop_imprisonment, 
+                                        x="race-ethnicity", y="estimate", 
+                                        fill="percent",
+                                        pos="dodge",
+                                        est="percent",
+                                        moe=NULL,
+                                        title="Washington State Population and Prison Percentages by Race/Ethnicity",
+                                        # subtitle=2019,
+                                        source=paste("The Color of Justice: Racial and Equity Disparity in State Prisons, 2019 (The Sentencing Project)", "Bureau of Justice Statistics, U.S. Census Bureau", sep="\n"),
+                                        alt=NULL,
+                                        xlabel=NULL, ylabel=NULL,
+                                        dec = 0, color="psrc_dark") + theme(plot.caption = element_text(size = 10)) #+ scale_x_discrete(limits=rev) #alphabetical order
+
+prison_pop_chart
+
+# generate interactive bar chart
+prison_pop_chart <-interactive_column_chart(t=prison_pop_imprisonment, 
+                                            x="race-ethnicity", y="estimate", 
+                                            fill="percent",
+                                            pos="dodge", est="percent", moe=NULL,
+                                            # href=NULL, hrefnm=NULL, hrefcl=NULL,
+                                            title="Washington State Population and Prison Percentages by Race/Ethnicity (2019)",
+                                            # subtitle=2019,
+                                            # source="The Color of Justice: Racial and Equity Disparity in State Prisons (The Sentencing Project), Bureau of Justice Statistics, U.S. Census Bureau",
+                                            # source=paste0("The Color of Justice: Racial and Equity Disparity in State Prisons (The Sentencing Project)","\n", "Bureau of Justice Statistics","\n", "U.S. Census Bureau"),
+                                            dec = 0, color="psrc_dark")
+```
+
+```{r, include=FALSE}
+# interactive webpage output process
+# htmlwidgets::saveWidget(prison_pop_chart,
+#                         file=paste0(website_dev_folder, "prison_v_population.html"))
+```
+\
+\
+
+<a href="#top">Back to top of the page</a>
+\
+\
+
+# Educational Attainment by Race/ethnicity (PUMS)
+```{r, include=FALSE}
+# data from PUMS
+y_2021 <- get_psrc_pums(span = pums_sp,
+                        dyear = pums_yr,
+                        level = "p", # Unit of analysis == person("h" used for household)
+                        vars = c("PRACE","SCHL", "AGEP")) # Person race/ethnicity (PSRC variable), education, age variables
+
+# re-categorize to simple Bachelor's degree or higher v. Less than Bach
+z_2021 <- y_2021 %>%
+  filter(AGEP>=25) %>% 
+  mutate(edu_simp=factor(case_when(grepl("(Bach|Mast|Prof|Doct)", SCHL) ~ "Bachelor's degree or higher",
+                                   !is.na(SCHL)                         ~ "Less than a Bachelor's degree")))
+```
+
+```{r, include=FALSE}
+# calculate count statistics based on adjusted variables
+dt_21 <- psrc_pums_count(z_2021, group_vars=c("PRACE","edu_simp"), rr = TRUE) 
+# dt <- psrc_pums_count(x, group_vars=c("HRACE","TEN")) 
+
+# keep only bachelor's degree or higher
+dt_21_simp <- dt_21 %>% 
+  filter(edu_simp!="Total",
+         edu_simp!= "Less than a Bachelor's degree") #%>% mutate(HRACE=str_wrap(HRACE, width = 8))
+```
+
+```{r, include=FALSE}
+# to get regional reference numbers
+# calculate count statistics based on adjusted variables
+dt_21_ref <- psrc_pums_count(z_2021, group_vars=c("edu_simp","PRACE"), rr = TRUE) 
+
+# remove unwanted data, keep only bachelor's degree or higher
+reference_21 <- dt_21_ref %>% 
+  filter(edu_simp!= "Total",
+         edu_simp!= "Less than a Bachelor's degree") %>%
+  filter(PRACE=="Total") %>% 
+  mutate(PRACE= case_when(PRACE=="Total"~"Region",
+                          TRUE~as.character(PRACE)))
+```
+
+```{r, include=FALSE}
+# join education data with regional education reference data
+dt_2021 <- rbind(dt_21_simp, reference_21)
+```
+
+```{r, include=FALSE}
+# setting up reference values for visualization - testing
+reference_val <- dt_2021 %>% 
+  filter(PRACE=="Region")
+
+ref_val <- reference_val$share
+
+# add/remove columns to dataset
+dt_2021 <- dt_2021 %>% 
+  mutate(ref_val=ref_val) %>%
+  dplyr::filter(PRACE!="Region")
+```
+
+```{r, include=FALSE}
+# adjust race labels based on rel. reliability/CV - >15 (anything other than 'good') mark with *
+dt_2021 <- dt_2021 %>%
+  mutate(PRACE=case_when(PRACE=="American Indian or Alaskan Native Alone"~"American Indian or Alaska Native alone*",
+                         PRACE=="Native Hawaiian and Other Pacific Islander alone"~"Native Hawaiian and Other Pacific Islander alone*",
+                         TRUE ~as.character(PRACE)))
+```
+
+## Simplified Race/ethnicity groups
+```{r, include=FALSE}
+# reduce number of race/ethnicity categories, if wanted - removing "multiple", "two or more", and "some other" to make easier to understand
+dt_2021_simprace <- dt_2021 %>% 
+  filter(PRACE=="American Indian or Alaskan Native alone*" |
+           PRACE=="Asian alone" |
+           PRACE=="Black or African American alone" |
+           PRACE=="Hispanic or Latinx" |
+           PRACE=="Native Hawaiian and Other Pacific Islander alone*" |
+           # PRACE=="Some Other Race alone" |
+           # PRACE=="Two or More Races" |
+           PRACE=="White alone")
+```
+
+```{r, include=FALSE}
+data_nm <- 'education21_1y_simprace'
+
+# create CSV 
+# write.csv(dt_2021_simprace,
+#           paste0(output_dir_csv, data_nm,'.csv'),
+#           row.names = TRUE)
+```
+
+```{r, include=FALSE}
+# order the race/ethnicity categories (if reference bar isn't available)
+dt_2021_simprace <- dt_2021_simprace %>% 
+  mutate(PRACE=forcats::fct_reorder(PRACE, -share))
+```
+
+```{r edu-race-chart, fig.width=10}
+# generate static bar chart
+# xlabs <- levels(dt_2021_simprace$PRACE) %>% stringr::str_wrap(12)
+edu_race_chart <- static_bar_chart(t=dt_2021_simprace,
+                                   x="share", y="PRACE",
+                                   fill="PRACE",
+                                   est="percent",
+                                   # moe="share_moe",
+                                   # href="ref_val", hrefnm="Region",
+                                   # hrefcl='#00716c',
+                                   title="Regional Educational Attainment by Race/Ethnicity",
+                                   subtitle="Bachelor's degree or higher for adults 25 years and older",
+                                   source=paste("U.S. Census Bureau, American Community Survey (ACS) 2021 1-Year Public Use Microdata Sample (PUMS)"),
+                                   alt=NULL,
+                                   xlabel=NULL, ylabel=NULL,
+                                   dec = 0, color="psrc_light") + ggplot2::scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 18)) + theme(plot.caption = element_text(size = 10)) #+ scale_x_discrete(limits=rev) #alphabetical order
+
+# trying to figure out reference line - static
+test_static <- edu_race_chart + 
+  ggplot2::geom_hline(yintercept= ref_val,
+                      linetype='solid', linewidth=2, show.legend = FALSE, color='#00716c', alpha=0.65) +
+  ggplot2::annotate("text", x = 1, y = ref_val+0.035, label = "Region", angle='0', color='#00716c')
+
+test_static
+
+# generate interactive bar chart
+edu_race_chart <-interactive_bar_chart(t=dt_2021_simprace,
+                                       x="share", y="PRACE",
+                                       fill="PRACE",
+                                       pos="dodge", est="percent", moe=NULL,
+                                       # href="ref_val", hrefnm="Region", hrefcl='#00716c',
+                                       title="Regional Educational Attainment by Race/Ethnicity",
+                                       subtitle="Bachelor's degree or higher for adults 25 years and older",
+                                       source="U.S. Census Bureau, American Community Survey (ACS) 2021 1-Year Public Use Microdata Sample (PUMS)",
+                                       dec = 0, color="psrc_light")
+```
+
+```{r, include=FALSE}
+# interactive webpage output process
+# htmlwidgets::saveWidget(edu_race_chart,
+#                         file=paste0(website_dev_folder, data_nm,'.html'))
+```
+\
+\
+
+<a href="#top">Back to top of the page</a>
+\
+\
+
+# Life Expectancy by POC Equity Quintile (WTN, PUMS)
+*Data from [Washington Tracking Network](https://fortress.wa.gov/doh/wtn/WTNPortal#!q0=1497) and Elmer
+```{r}
+# WTN data
+folder_path <- "Y:/Equity Indicators/experimenting/R-scripts/WTN/data-from-WTN/life_expectancy_over_time/"
+life_expec <- read.csv(paste0(folder_path,"Life_Expectancy_at_Birth_16_20.csv"))
+
+# filter to counties in PSRC region
+life_expec <- life_expec %>% 
+  mutate(year=2020) %>% 
+  filter(County.Name=="King" |
+           County.Name=="Kitsap" |
+           County.Name=="Pierce" |
+           County.Name=="Snohomish")
+
+# Elmer data sets - equity quintile tracts using psrcelmer() and crosswalk
+equity_tracts <- get_table(schema="equity", tbl_name="v_tract_shares")
+# table(equity_tracts$data_year)
+
+crosswalk_10_20 <- get_table(schema="census",
+                             tbl_name="v_geo_relationships_tracts")
+
+# 2020 equity tract data -----
+equity_tracts_20 <- equity_tracts %>% 
+  dplyr::filter(data_year==2020)
+
+
+# census population data by tract through ACS
+tracts_20 <- get_acs_recs(geography ='tract', 
+                          table.names = 'B01003',
+                          years = c(2020),
+                          acs.type = 'acs5')
+
+# join WTN health data (in 2010 census tracts) to cross walk
+health_risk_crosswalk <- merge(crosswalk_10_20, life_expec,
+                               by.x="geoid10",
+                               by.y="Census.Tract", 
+                               all.x=TRUE)
+
+# join WTN health data/crosswalk to equity quintiles (on 2020 census tracts)
+health_risk_equity_tracts <- merge(health_risk_crosswalk, equity_tracts_20,
+                                   by.x="geoid20",
+                                   by.y="geoid", 
+                                   all.y =TRUE)
+
+# join 2020 acs population data to WTN health data
+health_equity_tract20 <- merge(tracts_20, health_risk_equity_tracts,
+                               by.x="GEOID",
+                               by.y="geoid20", 
+                               all.y=TRUE)
+
+# clean/simplify data sets
+health_equity_quintiles20 <- health_equity_tract20 %>% #Warning: NAs introduced by coercion
+  dplyr::mutate(data_year=format(year.x,format="%Y")) %>% 
+  dplyr::mutate(Life.Expectancy_num=as.numeric(Life.Expectancy))
+
+# pivot data set so that there is one column with quintile designation
+health_equity_pivot20 <- health_equity_quintiles20 %>% 
+  pivot_longer(cols = ends_with("quintile"),
+               names_to = "equity_group",
+               values_to = "quintile")
+
+# calculations to get weighted average life expectancy per equity group/quintile by region 
+health_equity_pivot20_calc <- health_equity_pivot20 %>% 
+  dplyr::group_by(equity_group, quintile) %>%
+  summarise(wt_life_expec=(sum(Life.Expectancy_num*estimate, na.rm =TRUE))/(sum(estimate, na.rm=TRUE))) %>% 
+  mutate(County.Name="Region") %>% 
+  mutate(data_year="2020")
+
+# calculate 2020 region population
+population_test <- health_equity_pivot20 %>% 
+  distinct(GEOID, .keep_all = TRUE) %>%
+  dplyr::summarise(pop=formatC((sum(estimate, na.rm=TRUE)), format="d", big.mark=",")) #4,197,443	
+
+# calculations to get weighted average life expectancy per equity group/quintile
+health_equity_wt20 <- health_equity_pivot20 %>% 
+  dplyr::mutate(tot_risk_tract=estimate*Life.Expectancy_num) %>% 
+  dplyr::group_by(County.Name, data_year, equity_group, quintile) %>%
+  dplyr::summarise(tracts=length(GEOID),
+                   tot_age=(sum(tot_risk_tract, na.rm = TRUE)),
+                   tot_pop=(sum(estimate, na.rm = TRUE))) %>% 
+  dplyr::mutate(wt_life_expec=tot_age/tot_pop) %>% 
+  dplyr::select(-tot_age, -tot_pop, -tracts)
+
+health_equity2020 <- rbind(health_equity_pivot20_calc,
+                           health_equity_wt20)
+```
+
+```{r}
+# renaming labels ----
+health_equity <- health_equity2020 %>% 
+  filter(equity_group=="poc_quintile",
+         County.Name=="Region") %>% 
+  mutate(equity_group_edit = as.factor(case_when(equity_group=="poc_quintile"~"Race/Ethnicity",
+                                                 equity_group=="disability_quintile"~"Disability Status",
+                                                 equity_group=="lep_quintile"~"Limited English Proficiency",
+                                                 equity_group=="income_quintile"~"Low Income",
+                                                 equity_group=="youth_quintile"~"Youth <18",
+                                                 equity_group=="older_quintile"~"Older Adults 65+")),
+         quintile_exp=case_when(quintile=="Low"~"Fewest People of Color",
+                                quintile=="Low Medium"~"Fewer People of Color",
+                                quintile=="Medium"~"Average People of Color",
+                                quintile=="Medium High"~"More People of Color",
+                                quintile=="High"~"Most People of Color"))
+
+# re-ordering variables ----
+health_equity_poc <- health_equity %>%
+  # equity groups
+  mutate(equity_group_ord = fct_relevel(equity_group_edit,
+                                        c("Race/Ethnicity",
+                                          "Low Income",
+                                          "Disability Status",
+                                          "Limited English Proficiency",
+                                          "Youth <18",
+                                          "Older Adults 65+")),
+         quintile_ord = fct_relevel(quintile_exp,
+                                    c('Fewest People of Color',
+                                      'Fewer People of Color',
+                                      'Average People of Color',
+                                      'More People of Color',
+                                      'Most People of Color')))
+
+health_equity_poc <- data.frame(health_equity_poc)
+health_equity_poc %<>% dplyr::arrange(quintile_ord) #to correct the color ramp
+```
+
+```{r life-expec-chart, fig.width=10}
+# set variables ----
+indicator_title <- "Average Life Expectancy by Census Tract Concentration of People of Color"
+source_info <- paste("Washington State Department of Health, Washington Tracking Network,", "U.S. Census Bureau, American Community Survey (ACS) 2020 5-Year Public Use Microdata Sample (PUMS), U.S. Census Bureau, 2020 Census Tracts", sep = '\n')
+subtitle_text <- "the number of years a newborn can expect to live in King, Kitsap, Snohomish, and Pierce Counties"
+
+# generate static column chart ----
+xlabs <- levels(health_equity_poc$quintile_ord) %>% stringr::str_wrap(15)
+
+healthrisk_quintile <- static_column_chart(t=health_equity_poc,
+                                           x="quintile_ord", y="wt_life_expec",
+                                           fill="quintile_ord",
+                                           pos="dodge",
+                                           est="number",
+                                           moe=NULL,
+                                           title=indicator_title,
+                                           subtitle=subtitle_text,
+                                           source=source_info,
+                                           dec = 1, color="blues_inc") + coord_cartesian(ylim = c(70, 85)) +  ggplot2::scale_x_discrete(labels=xlabs) + theme(plot.caption = element_text(size = 10))
+
+healthrisk_quintile
+
+# generate interactive bar chart ----
+healthrisk_quintile <-interactive_column_chart(t=health_equity_poc,
+                                               x="quintile_ord", y="wt_life_expec",
+                                               fill="quintile_ord",
+                                               pos="dodge", est="number", moe=NULL,
+                                               title=indicator_title,
+                                               subtitle=subtitle_text,
+                                               source=source_info,
+                                               dec = 1, color="blues_inc")
+```
+
+```{r, include=FALSE}
+data_nm <- 'lifeexpectancy20_poc'
+
+# create CSV 
+# write.csv(healthrisk_equity,
+#           paste0(output_dir_csv, data_nm,'.csv'),
+#           row.names = TRUE)
+```
+
+```{r}
+# interactive webpage output process
+# htmlwidgets::saveWidget(healthrisk_quintile,
+#                         file=paste0(website_dev_folder, data_nm,'.html'))
+```
+\
+\
+
+# Copy files from Y drive > website folder
+```{r, include=FALSE}
+current.folder <- "Y:/REAP/Legacy of Structural Racism/7-contemporary/FinalVisuals_20230419_files/figure-html"
+new.folder <- "//WEB/website_data/legacy-structural-racism-storymap/R-output-png"
+list.of.files <- list.files(current.folder, full.names = T)
+list.of.files
+# # copy the files to the new folder
+file.copy(list.of.files,
+          new.folder,
+          overwrite = T)
+```
+
+<a href="#top">Back to top of the page</a>
