@@ -1026,14 +1026,14 @@ health_equity_pivot19_calc <- health_equity_pivot19 %>%
 #   dplyr::select(-tot_age, -tot_pop, -tracts)
 
 # combine weighted county and regional values
-health_equity2019 <- rbind(health_equity_pivot19_calc,
-                           health_equity_wt20)
+# health_equity2019 <- rbind(health_equity_pivot19_calc,
+#                            health_equity_wt20)
 ```
 
 ```{r}
 # renaming labels ----
 # storymap is only showing regional values for households of color
-health_equity <- health_equity2019 %>% 
+health_equity <- health_equity_pivot19_calc %>% 
   filter(equity_group=="poc_quintile",
          County.Name=="Region") %>% 
   mutate(equity_group_edit = case_when(equity_group == "poc_quintile"~"Race/Ethnicity"),
@@ -1090,7 +1090,7 @@ healthrisk_quintile <-interactive_column_chart(t=health_equity_poc,
 ```
 
 ```{r, include=FALSE}
-data_nm <- 'lifeexpectancy20_poc'
+# data_nm <- 'lifeexpectancy20_poc'
 
 # create CSV 
 # write.csv(healthrisk_equity,
